@@ -6,8 +6,10 @@ import string
 import os
 import re
 import sys
+from deepdiff import DeepDiff
 
 # Local module imports
+from pyresttest import contenthandling
 from . import parsing
 
 # Python 3 compatibility shims
@@ -41,7 +43,6 @@ Validators:
 """
 
 logger = logging.getLogger('pyresttest.validators')
-
 
 # Binary comparison tests
 COMPARATORS = {
@@ -100,6 +101,7 @@ def test_type(val, mytype):
     except TypeError:
         return isinstance(val, typelist)
 
+
 # Unury comparison tests
 VALIDATOR_TESTS = {
     'exists': lambda x: x is not None,
@@ -123,6 +125,7 @@ def safe_length(var):
 
 def regex_compare(input, regex):
     return bool(re.search(regex, input))
+
 
 # Validator Failure Reasons
 FAILURE_INVALID_RESPONSE = 'Invalid HTTP Response Code'
@@ -172,7 +175,8 @@ class AbstractExtractor(object):
     args = None
 
     def __str__(self):
-        return "Extractor type: {0}, query: {1}, is_templated: {2}, args: {3}".format(self.extractor_type, self.query, self.is_templated, self.args)
+        return "Extractor type: {0}, query: {1}, is_templated: {2}, args: {3}".format(self.extractor_type, self.query,
+                                                                                      self.is_templated, self.args)
 
     def extract_internal(self, query=None, body=None, headers=None, args=None):
         """ Do extraction, query should be pre-templated """
@@ -332,7 +336,7 @@ class ComparatorValidator(AbstractValidator):
     """ Does extract and compare from request body   """
 
     name = 'ComparatorValidator'
-    config = None   # Configuration text, if parsed
+    config = None  # Configuration text, if parsed
     extractor = None
     comparator = None
     comparator_name = ""
@@ -358,7 +362,8 @@ class ComparatorValidator(AbstractValidator):
                 body=body, headers=headers, context=context)
         except Exception as e:
             trace = traceback.format_exc()
-            return Failure(message="Extractor threw exception", details=trace, validator=self, failure_type=FAILURE_EXTRACTOR_EXCEPTION)
+            return Failure(message="Extractor threw exception", details=trace, validator=self,
+                           failure_type=FAILURE_EXTRACTOR_EXCEPTION)
 
         # Compute expected output, either templating or using expected value
         expected_val = None
@@ -368,7 +373,8 @@ class ComparatorValidator(AbstractValidator):
                     body=body, headers=headers, context=context)
             except Exception as e:
                 trace = traceback.format_exc()
-                return Failure(message="Expected value extractor threw exception", details=trace, validator=self, failure_type=FAILURE_EXTRACTOR_EXCEPTION)
+                return Failure(message="Expected value extractor threw exception", details=trace, validator=self,
+                               failure_type=FAILURE_EXTRACTOR_EXCEPTION)
         elif self.isTemplateExpected and context:
             expected_val = string.Template(
                 self.expected).safe_substitute(context.get_values())
@@ -481,7 +487,8 @@ class ExtractTestValidator(AbstractValidator):
                 body=body, headers=headers, context=context)
         except Exception as e:
             trace = traceback.format_exc()
-            return Failure(message="Exception thrown while running extraction from body", details=trace, validator=self, failure_type=FAILURE_EXTRACTOR_EXCEPTION)
+            return Failure(message="Exception thrown while running extraction from body", details=trace, validator=self,
+                           failure_type=FAILURE_EXTRACTOR_EXCEPTION)
 
         tested = self.test_fn(extracted)
         if tested:
@@ -493,6 +500,32 @@ class ExtractTestValidator(AbstractValidator):
                 self.test_name, extracted)
             # TODO can we do better with details?
             return failure
+
+
+class FullJsonValidator(AbstractValidator):
+    data = None
+    name = "Full JSON Validator"
+
+    def validate(self, body=None, headers=None, context=None):
+        data_text = self.data.get_content(context=context)
+        change=DeepDiff(body, data_text,ignore_order=True)
+        if any(change):
+            return True
+        else:
+            failure = Failure(validator=self, failure_type=FAILURE_VALIDATOR_FAILED)
+            failure.message = "Extract and test validator failed on test: {0} with diff ({1})".format(
+                self.name, change)
+            return failure
+
+    @classmethod
+    def parse(cls, config):
+        validator = FullJsonValidator()
+        config = parsing.lowercase_keys(config)
+        if 'data' not in config:
+            raise ValueError("Cannot create a full json validator without a 'data' configuration element")
+        validator.data = contenthandling.ContentHandler.parse_content(config[
+                                                                            'data'])
+        return validator
 
 
 def parse_extractor(extractor_type, config):
@@ -592,6 +625,7 @@ def register_comparator(comparator_name, comparator_function):
             "Cannot register a comparator name that already exists: {0}".format(comparator_name))
     COMPARATORS[comparator_name] = comparator_function
 
+
 # --- REGISTRY OF EXTRACTORS AND VALIDATORS ---
 register_extractor('jsonpath_mini', MiniJsonExtractor.parse)
 register_extractor('header', HeaderExtractor.parse)
@@ -606,3 +640,4 @@ register_validator('compare', ComparatorValidator.parse)
 register_validator('assertEqual', ComparatorValidator.parse)
 register_validator('extract_test', ExtractTestValidator.parse)
 register_validator('assertTrue', ExtractTestValidator.parse)
+register_validator('fulljson', FullJsonValidator.parse)
